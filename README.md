@@ -1,5 +1,5 @@
 # QUADROTOR
-micro controller used- Atmega32, Control Algorithm- PD, filter used- Kalman, Pre-requisites- None. No libraries were used.
+micro controller used- Atmega32, Control Algorithm- PD, filter used- Depends on user. I have removed the code of filter for flexibility, Pre-requisites- None. No libraries were used.
 Algorithm made for simple hover. Do-not use in aggressive trajectories.
 Motor thrust= k1*(w^2), Motor torque= k2*(w^2).
 w- angular velocity of motor or RPM, k1 and k2- constants that depend on the type of propeller used.
