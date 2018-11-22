@@ -1,0 +1,495 @@
+/*
+ * kalman1.c
+ *
+ * Created: 7/6/2017 1:35:38 PM
+ *  Author: Yash
+ */ 
+
+
+#undef F_CPU
+#define F_CPU 8000000UL
+
+#include <avr/io.h>
+#include <math.h>
+#include <util/delay.h>
+#include <stdlib.h>
+#include <avr/interrupt.h>
+
+double imu[6];
+double angle[3];
+double des_angle[]={0,0,0};
+double bias[3];
+double dt=0.001;
+int max=500;
+int min=2000;
+////////////////////////// PID PARAMETERS
+int servo_current_1a[]={0,0};
+int servo_current_1b[]={0,0};
+int servo_new_1a[]={249,249};/////////////// MOTORS R SET TO MAX
+int servo_new_1b[]={249,249}; ////////// MOTORS R SET TO MAX
+int count1a=0;
+int count1b=0;
+int ta=0;
+int tb=0;
+unsigned char f;
+double r;
+volatile double choice=0;
+double w[4];
+///int normal;
+
+
+void convert_w_to_rpm()
+{
+	int i;
+	double temp[4];
+	
+	
+	for(i=0;i<4;i++)
+	{
+		if(w[i]<0)w[i]=0;
+	}
+	
+	for(i=0;i<4;i++)
+	{
+		temp[i]=(125*w[i])/(930*11.1);
+		temp[i]=temp[i]+124;
+	}
+	for(i=0;i<2;i++)
+	{
+		if(temp[i]>249) servo_new_1a[i]=249;
+		else if(temp[i]<125) servo_new_1a[i]=125;
+		else servo_new_1a[i]=(int)temp[i];  ///////////// EXPLICIT TYPECAST
+	}
+	for(i=2;i<4;i++)
+	{
+		if(temp[i]>249) servo_new_1b[i-2]=249;
+		else if(temp[i]<125) servo_new_1b[i-2]=125;
+		else servo_new_1b[i-2]=(int)temp[i];
+	}
+}
+
+
+ISR(TIMER1_COMPA_vect)
+{
+	++ta;
+	f=~PORTB;
+	if(ta==1)
+	{
+		f=f|(0b00000001);
+		PORTB=~f;
+		count1a=1;
+		OCR1A=servo_new_1a[count1a];
+		servo_current_1a[count1a]=servo_new_1a[count1a];
+		
+	}
+	else if(ta==2)
+	{
+		f=f|(0b00000010);
+		PORTB=~f;
+		count1a=0;
+		OCR1A=servo_new_1a[count1a];
+		servo_current_1a[count1a]=servo_new_1a[count1a];
+	}
+	
+}
+
+ISR(TIMER1_COMPB_vect)
+{
+	++tb;
+	f=~PORTB;
+	if(tb==1)
+	{
+		f=f|(0b00000100);
+		PORTB=~f;
+		count1b=1;
+		OCR1B=servo_new_1b[count1b];
+		servo_current_1b[count1b]=servo_new_1b[count1b];
+		
+	}
+	else if(tb==2)
+	{
+		f=f|(0b01000000);
+		PORTB=~f;
+		count1b=0;
+		OCR1B=servo_new_1b[count1b];
+		servo_current_1b[count1b]=servo_new_1b[count1b];
+	}
+	
+}
+
+ISR(TIMER1_OVF_vect)
+{
+	if(ta==10) PORTB|=0b00000001;
+	else if(ta==1) PORTB|=0b00000010;
+	
+	if(tb==10) PORTB|=0b00000100;
+	else if(tb==1) PORTB|=0b01000000;
+
+	//servo_current_1a[count1a]=servo_new_1a[count1a]; ////////////////////////////////////////ONLY FOR DEBUGGING. REMOVE IMMEDIATELY
+	
+	ta=ta%10;
+	tb=tb%10;
+	//OCR1A=135;
+}
+
+ISR(USART_RXC_vect)
+{
+	r=930.0*11.1;
+	r=r/20.0;
+	
+	if(UDR=='0')
+	{
+		choice=3; // look at main
+		w[0]=930;
+		w[1]=930;
+		w[2]=930;
+		w[3]=930;
+		
+		convert_w_to_rpm();
+		return;
+		
+	}
+	else if(UDR=='1')
+	{
+		choice=0; ////////////////// arbitrary changes
+		
+		w[0]=w[0]+r;
+		w[1]=w[1]+r;
+		w[2]=w[2]+r;
+		w[3]=w[3]+r;
+		
+		convert_w_to_rpm();
+		
+		PORTA^=(1<<PA4);
+		PORTA^=(1<<PA3);
+		_delay_us(100);
+		PORTA^=(1<<PA4);
+		PORTA^=(1<<PA3);
+		return;
+		
+	}
+	else if(UDR=='2')
+	{
+		choice=1;   ///////// arbitrary changes
+		
+		w[0]=w[0]-r;
+		w[1]=w[1]-r;
+		w[2]=w[2]-r;
+		w[3]=w[3]-r;
+		
+		convert_w_to_rpm();
+		
+		PORTA^=(1<<PA4);
+		PORTA^=(1<<PA3);
+		_delay_us(100);
+		PORTA^=(1<<PA4);
+		PORTA^=(1<<PA3);
+		return;
+		
+	}
+	else if(UDR=='4')
+	{
+		choice=2;
+		r=930;
+		w[0]=r;
+		w[1]=r;
+		w[2]=r;
+		w[3]=r;
+		
+		convert_w_to_rpm();
+		
+	}
+	
+	
+}
+
+void PWM_init()
+{
+	TCCR1A|=(1<<WGM11)|(1<<COM1A1)|(1<<COM1B1);
+	TCCR1B|=(1<<CS11)|(1<<CS10)|(1<<WGM13)|(1<<WGM12);
+	TIMSK|=(1<<OCIE1A)|(1<<TOIE1)|(1<<OCIE1B);
+	ICR1=249;
+	//OCR1A=249;
+	//OCR1B=249;
+}
+
+void force_motor(int val)
+{
+	servo_new_1a[0]=val;
+	servo_new_1a[1]=val;
+	servo_new_1b[0]=val;
+	servo_new_1b[1]=val;
+}
+
+///////////////////////////////////////////////////PID STARTS
+double K=1;
+double L=0.52;
+double Kp=0;
+double M=1;
+double diff[3];
+
+
+//////////////////////////////////////////////////PID STOPS
+
+////////////////////////////////////////////////////////////////  ADC BEGINSSSSS
+
+
+
+void enter_command()
+{
+	PORTA|=(1<<PA3);
+	force_motor(124);
+	PORTA|=(1<<PA4);
+    while(choice!=2);
+	//////////while(choice!=3);
+	PORTA^=(1<<PA3);
+	PORTA^=(1<<PA4);
+	_delay_ms(10);
+	PORTA^=(1<<PA3);
+	PORTA^=(1<<PA4);
+	////normal=1; // make it 1
+	
+}
+
+
+
+/////////////////////////////////////////////////////// ADC RISES
+
+void uart_init(uint16_t);
+
+
+void uart_init(uint16_t val)
+{
+	UBRRL=val;
+	UBRRH=val>>8;
+	
+	UCSRB=(1<<RXEN)|(1<<RXCIE);
+	UCSRC=(1<<URSEL)|(1<<UCSZ0)|(1<<UCSZ1);
+	
+}
+//////////////////////////////////// UART ENDS HERE. I2C BEGINS
+
+
+void start()
+{
+	TWCR=(1<<TWINT)|(1<<TWSTA)|(1<<TWEN);
+	while(!(TWCR&(1<<TWINT)));
+	
+}
+
+void stop()
+{
+	TWCR=(1<<TWINT)|(1<<TWSTO)|(1<<TWEN);
+	while(!(TWCR & (1<<TWSTO)));
+}
+
+void write_add(uint8_t x)
+{
+	TWDR=x;
+	TWCR=(1<<TWINT)|(1<<TWEN);
+	while(!(TWCR&(1<<TWINT)));
+	
+	//while((TWSR & 0xF8)!= 0x40);
+}
+
+void write(uint8_t x)
+{
+	TWDR=x;
+	TWCR=(1<<TWINT)|(1<<TWEN);
+	while(!(TWCR&(1<<TWINT)));
+	//while((TWSR & 0xF8) != 0x28);
+}
+
+
+void i2c_initialise()
+{
+	TWSR=(0<<TWPS1)|(0<<TWPS0);
+	TWBR=32;
+	TWCR=(1<<TWEN);
+}
+
+void wake_up()
+{
+	start();
+	write_add(0b11010010);
+	
+	write(0x6B);
+	
+	
+	write(0x0);
+	stop();
+}
+
+void read_start(uint8_t x)
+{
+	start();
+	
+	
+	write_add(0b11010010);
+	
+	write(x);//0x38
+	
+	start();
+	
+	write_add(0b11010011);
+	
+	
+}
+
+int read_ack()  // change to uint8_t
+{
+	TWCR=(1<<TWINT)|(1<<TWEN)|(1<<TWEA);
+	while(!(TWCR&(1<<TWINT)));
+	
+	return(TWDR);
+}
+
+int read_nack()  // change to uint8_t
+{
+	TWCR=(1<<TWINT)|(1<<TWEN);
+	while(!(TWCR&(1<<TWINT)));
+	//while(1);
+	
+	return(TWDR);
+	
+}
+
+///////////////////////////////// I2C ENDS HERE
+
+void update_imu()
+{
+	int count=0;
+	int val1;
+	double val;
+	
+	read_start(0x3B);
+	
+	while(count<2)
+	{
+		val1=read_ack();
+		val1=(val1<<8)|(read_ack());
+		val=val1/16384.0;
+		imu[count]=val;
+		++count;
+	}
+	val1=read_ack();
+	val1=(val1<<8)|(read_nack());
+	val=val1/16384.0;
+	imu[count]=val;
+	++count;
+	
+	//itoa(gyroz,e,10);
+	//sprintf(e,"%4f",gyroz);
+	
+	stop();
+	
+	read_start(0x43);
+	
+	while((count>=3)&&(count<=4))
+	{
+		val1=read_ack();
+		val1=(val1<<8)|(read_ack());
+		val=val1/131.0;
+		imu[count]=val;
+		++count;
+	}
+	val1=read_ack();
+	val1=(val1<<8)|(read_nack());
+	val=val1/131.0;
+	imu[count]=val;
+	++count;
+	
+	stop();
+
+}
+
+
+void filter()
+{
+update_imu();
+// enter code for filter here
+}
+
+int main(void)
+{
+	sei();
+	bias[2]=0.0;
+	i2c_initialise();
+	PWM_init();
+	wake_up();
+	DDRA=0b00011000;
+	DDRB=0b11110111;
+	PORTB=0b11110111;
+	DDRD=0b00000010;
+	PORTD=0b00000010;
+	uart_init(52);
+		
+	enter_command();
+	
+
+	int i;
+	double test,jest,best;
+		
+	for (i=0;i<=500;i++)
+	{
+	filter();
+	bias[2]=bias[2]+imu[5];
+	}
+	bias[2]=bias[2]/i;
+	for (i=0;i<=500;i++)
+	{
+		filter();
+		bias[2]=bias[2]+imu[5];
+	}
+	bias[2]=bias[2]/i;
+	PORTA^=(1<<PA4);
+	PORTA^=(1<<PA3);
+	
+	_delay_ms(100);
+	
+	while(1)
+	{
+		
+		if(choice==3)
+		{
+			cli();
+			PORTA|=(1<<PA4);
+			PORTA|=(1<<PA3);
+			while(1);// main code stops at infinite loop and interrupts are also disabled.
+		}
+		
+		
+		
+		//TODO:: Please write your application code
+		_delay_us(960);
+		for(i=0;i<=15;i++)
+		{
+			filter();
+		}
+		angle[2]=angle[2]+(imu[5]-bias[2])*dt;
+		
+		diff[0]=des_angle[0]-angle[0];
+		diff[1]=des_angle[1]-angle[1];
+		diff[2]=des_angle[2]-angle[2];
+		
+		//w[0]=970+((-Kp*diff[2])/(4*M) + (-Kp*diff[1])/(K*L));
+		//w[1]=970+((Kp*diff[2])/(4*M) + (Kp*diff[0])/(K*L));
+		//w[2]=970+((-Kp*diff[2])/(4*M) + (Kp*diff[1])/(K*L));
+		//w[3]=970+((Kp*diff[2])/(4*M) + (-Kp*diff[0])/(K*L));
+		
+		test=Kp*diff[2]/(4*M);
+		jest=Kp*diff[1]/(K*L);
+		best=Kp*diff[0]/(K*L);
+		w[0]=((-test) + (-jest))+w[0];
+		w[1]=((test) + (best))+w[1];
+		w[2]=((-test) + (jest))+w[2];
+		w[3]=((test) + (-best))+w[3];
+		
+		
+		//convert_w_to_rpm();
+		
+		_delay_ms(1);
+
+	}
+
+}
